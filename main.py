@@ -21,7 +21,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
     title="Pocket OTC AI Analyzer",
-    version="3.0.0",
+    version="3.1.0",
     description="READ-ONLY chart analysis with visual + closed-candle data fusion.",
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -32,6 +32,7 @@ PAIRS = [
     "EURCHF_otc", "EURAUD_otc", "EURNZD_otc", "EURCAD_otc",
 ]
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+EXPIRY_MINUTES = 1
 
 
 def _api_key(query_key: Optional[str], header_key: Optional[str]) -> str:
@@ -75,7 +76,8 @@ async def index():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "mode": "READ-ONLY", "version": "3.0.0",
+    return {"status": "ok", "mode": "READ-ONLY", "version": app.version,
+            "expiry_minutes": EXPIRY_MINUTES,
             "vision_model": os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")}
 
 
@@ -106,12 +108,11 @@ async def analyze_image(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"فشل تحليل Vision: {exc}") from exc
 
-    # If the screenshot identifies an OTC pair, use it; otherwise image-only remains available.
     pair = str(vision.get("asset") or "").strip()
     pair = pair if pair in PAIRS else None
     if not pair:
         vision.update(source="VISION", fusion="IMAGE_ONLY", analysis_time=datetime.now(timezone.utc).isoformat(),
-                      duration_minutes=5, disclaimer="تحليل للصورة فقط — لا يتم تنفيذ أي صفقة.")
+                      duration_minutes=EXPIRY_MINUTES, disclaimer="تحليل للصورة فقط — لا يتم تنفيذ أي صفقة.")
         return vision
 
     try:
@@ -119,7 +120,6 @@ async def analyze_image(
         analysis, market = _market_source(candles)
         guard = _conflict_guard(vision, market)
         fused = await refine_combined_with_openrouter(vision, market, analysis, key)
-        # Never allow the final LLM to override a hard disagreement gate.
         if guard["signal"] == "NO TRADE":
             fused = guard
         fused.update({
@@ -127,19 +127,18 @@ async def analyze_image(
             "vision_signal": vision.get("signal"), "vision_confidence": vision.get("confidence"),
             "market_signal": market.get("signal"), "market_confidence": market.get("confidence"),
             "analysis": analysis, "analysis_time": datetime.now(timezone.utc).isoformat(),
-            "duration_minutes": 5,
+            "duration_minutes": EXPIRY_MINUTES,
             "disclaimer": "تحليل فقط — لا يتم تنفيذ أي صفقة.",
         })
         return fused
     except PocketDataError:
         vision.update(source="VISION", fusion="IMAGE_ONLY", pair=pair,
-                      analysis_time=datetime.now(timezone.utc).isoformat(), duration_minutes=5,
+                      analysis_time=datetime.now(timezone.utc).isoformat(), duration_minutes=EXPIRY_MINUTES,
                       disclaimer="تعذر جلب بيانات الشموع؛ تم الاحتفاظ بتحليل الصورة فقط.")
         return vision
     except Exception:
-        # Never hide a valid visual result if the optional data layer fails.
         vision.update(source="VISION", fusion="IMAGE_ONLY", pair=pair,
-                      analysis_time=datetime.now(timezone.utc).isoformat(), duration_minutes=5,
+                      analysis_time=datetime.now(timezone.utc).isoformat(), duration_minutes=EXPIRY_MINUTES,
                       disclaimer="تعذر دمج بيانات السوق؛ تم الاحتفاظ بتحليل الصورة فقط.")
         return vision
 
@@ -166,5 +165,5 @@ async def analyze(
         except Exception:
             source = "LOCAL"
     result.update(source=source, pair=pair, analysis_time=datetime.now(timezone.utc).isoformat(),
-                  duration_minutes=5, disclaimer="تحليل فقط — لا يتم تنفيذ أي صفقة.")
+                  duration_minutes=EXPIRY_MINUTES, disclaimer="تحليل فقط — لا يتم تنفيذ أي صفقة.")
     return result
