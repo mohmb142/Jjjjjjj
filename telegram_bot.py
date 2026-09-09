@@ -1,5 +1,6 @@
 import os
 import asyncio
+import threading
 from datetime import datetime
 from html import escape
 
@@ -11,6 +12,9 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from image_analyzer import analyze_chart_image
 
 load_dotenv()
+
+_bot_thread = None
+_bot_lock = threading.Lock()
 
 
 def get_config():
@@ -55,8 +59,6 @@ async def help_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _fmt(value, default="غير واضح"):
     if value is None or value == "":
         return default
-    if isinstance(value, (dict, list)):
-        return escape(str(value))
     return escape(str(value))
 
 
@@ -162,27 +164,43 @@ def build_application():
     return app
 
 
+def _polling_worker():
+    """Dedicated thread with its own asyncio loop; avoids Colab/Jupyter loop conflicts."""
+    global _bot_thread
+    try:
+        app = build_application()
+        print("Telegram polling started in a dedicated background thread.")
+        app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=True)
+    except Exception as exc:
+        print(f"❌ Telegram background worker stopped: {exc}")
+    finally:
+        with _bot_lock:
+            _bot_thread = None
+
+
 def run():
-    """Run safely in normal Python or inside a running Jupyter/Colab event loop."""
+    """Run normally, or in a dedicated thread when called from Jupyter/Colab."""
+    global _bot_thread
+
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop and running_loop.is_running():
+        with _bot_lock:
+            if _bot_thread is not None and _bot_thread.is_alive():
+                print("⚠️ Telegram bot is already running.")
+                return _bot_thread
+            _bot_thread = threading.Thread(target=_polling_worker, name="telegram-bot", daemon=True)
+            _bot_thread.start()
+        print("Telegram bot is running in a dedicated background thread (Colab-safe).")
+        return _bot_thread
+
     app = build_application()
     print("Telegram bot is running. IMAGE READ-ONLY mode: no trade execution.")
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        async def runner():
-            await app.initialize()
-            await app.start()
-            if app.updater is None:
-                raise RuntimeError("Telegram updater is unavailable")
-            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-            print("Telegram polling started inside Colab event loop.")
-            await asyncio.Event().wait()
-        return loop.create_task(runner())
-
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+    return None
 
 
 if __name__ == "__main__":
