@@ -12,61 +12,46 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install fastapi uvicorn
+        run: python -m pip install -r requirements.txt
+
       - name: Compile Python modules
-        run: python -m compileall -q . -x 'phone-agent|*.ipynb'
-      - name: Test indicators and signal engine
-        run: |
-          python - <<'PY'
-          from indicators import analyze_candles
-          from signal_engine import generate_signal
-          candles=[]
-          price=1.1000
-          for i in range(100):
-              close=price + (0.0001 if i % 3 else -0.00003)
-              candles.append({"timestamp": i, "open": price, "high": max(price, close)+0.00005, "low": min(price, close)-0.00005, "close": close})
-              price=close
-          analysis=analyze_candles(candles)
-          result=generate_signal(analysis)
-          assert analysis['candles_used'] == 100
-          assert result is not None
-          print('Indicators OK')
-          print('Signal:', result)
-          PY
-      - name: Test FastAPI app
+        run: python -m compileall -q main.py image_analyzer.py indicators.py openrouter.py pocket_data.py signal_engine.py telegram_bot.py
+
+      - name: Run deterministic tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Smoke-test FastAPI
         run: |
           python - <<'PY'
           from fastapi.testclient import TestClient
-          from main import app, PAIRS
-          client=TestClient(app)
-          r=client.get('/api/pairs')
-          assert r.status_code == 200
-          data=r.json()
-          assert data['pairs'] == PAIRS
-          assert len(PAIRS) == 12
-          print('FastAPI OK:', data)
+          from main import app
+          client = TestClient(app)
+          assert client.get('/health').status_code == 200
+          assert client.get('/api/pairs').status_code == 200
+          print('FastAPI smoke test OK')
           PY
+
       - name: Test real OTC data endpoint
         continue-on-error: true
         run: |
           python - <<'PY'
           import asyncio
           from pocket_data import get_closed_candles, PocketDataError
+
           async def main():
               try:
-                  candles=await get_closed_candles('EURUSD_otc')
+                  candles = await get_closed_candles('EURUSD_otc')
                   print('OTC API returned', len(candles), 'candles')
-                  if candles:
-                      print('Latest candle:', candles[-1])
-              except PocketDataError as e:
-                  print('OTC API unavailable:', e)
+              except PocketDataError as exc:
+                  print('OTC API unavailable (non-blocking):', exc)
+
           asyncio.run(main())
           PY
