@@ -39,10 +39,8 @@ def main_keyboard():
             InlineKeyboardButton(PAIR_LABELS[PAIRS[i + 1]], callback_data=f"pair:{PAIRS[i + 1]}")
             if i + 1 < len(PAIRS) else InlineKeyboardButton("—", callback_data="noop"),
         ])
-    rows += [
-        [InlineKeyboardButton("📡 حالة النظام", callback_data="status")],
-        [InlineKeyboardButton("ℹ️ حول النظام", callback_data="about")],
-    ]
+    rows += [[InlineKeyboardButton("📡 حالة النظام", callback_data="status")],
+             [InlineKeyboardButton("ℹ️ حول النظام", callback_data="about")]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -51,7 +49,7 @@ def home_text():
         "<b>📊 POCKET OTC AI ANALYZER</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🟢 المحرك: Google Colab\n"
-        "📡 المصدر: Pocket Option WebSocket\n"
+        "📡 المصدر: OTC Live Data API (بدون SSID)\n"
         "💹 السعر: بث حي مباشر\n"
         "🧠 التحليل: مؤشرات فنية + اختياري OpenRouter\n\n"
         "اختر زوجًا لقراءة السعر والشموع المغلقة وتحليلها.\n\n"
@@ -60,18 +58,13 @@ def home_text():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        home_text(), parse_mode=ParseMode.HTML, reply_markup=main_keyboard()
-    )
+    await update.effective_message.reply_text(home_text(), parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
 
 
 async def analyze_pair(pair: str):
     candles = await get_closed_candles(pair)
     analysis = analyze_candles(candles)
-    try:
-        live_price = await get_live_price(pair)
-    except PocketDataError:
-        live_price = float(candles[-1]["close"])
+    live_price = await get_live_price(pair)
     analysis["live_price"] = live_price
 
     result = generate_signal(analysis)
@@ -129,8 +122,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>📡 حالة النظام</b>\n\n"
             "🟢 Telegram: متصل\n"
             "🟢 Google Colab: يعمل (هذه الجلسة)\n"
-            "🟢 مصدر الأسعار: Pocket Option WebSocket\n"
-            f"🟢 SSID: {'مضبوط' if os.getenv('POCKET_OPTION_SSID', '').strip() else 'غير مضبوط'}\n"
+            "🟢 مصدر الأسعار: OTC Live Data API\n"
+            "🟢 SSID: غير مطلوب\n"
             f"{'🟢' if OPENROUTER_KEY else '⚪'} OpenRouter: {'مفعّل' if OPENROUTER_KEY else 'اختياري/غير مفعّل'}\n\n"
             "⚠️ لا يتم تنفيذ الصفقات."
         )
@@ -139,11 +132,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "about":
         await query.edit_message_text(
             "<b>ℹ️ عن Pocket OTC AI Analyzer</b>\n\n"
-            "يستخدم BinaryOptionsToolsV2 لقراءة بث الأسعار والشموع من Pocket Option عبر WebSocket.\n"
+            "يقرأ أسعار وبيانات OTC من مصدر بيانات خارجي، بدون ربط حساب Pocket Option وبدون SSID.\n"
             "يحسب EMA/RSI/MACD/ATR والدعم والمقاومة وآخر 10 شموع.\n\n"
             "النتيجة تحليلية وليست ضمانًا للربح أو احتمالًا للنجاح، ولا توجد أي وظائف لفتح أو إغلاق الصفقات.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_keyboard(),
+            parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
         )
         return
     if not data.startswith("pair:"):
@@ -155,30 +147,23 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.edit_message_text(
-        f"⏳ جاري قراءة السعر المباشر والشموع المغلقة لـ <b>{escape(PAIR_LABELS[pair])} OTC</b>...",
+        f"⏳ جاري قراءة السعر والشموع الحقيقية لـ <b>{escape(PAIR_LABELS[pair])} OTC</b>...",
         parse_mode=ParseMode.HTML,
     )
     try:
         _, analysis, result, source = await analyze_pair(pair)
-        text = format_result(pair, analysis, result, source)
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 إعادة التحليل", callback_data=f"pair:{pair}")],
             [InlineKeyboardButton("⬅️ الأزواج", callback_data="home")],
         ])
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await query.edit_message_text(format_result(pair, analysis, result, source), parse_mode=ParseMode.HTML, reply_markup=keyboard)
     except PocketDataError as e:
         await query.edit_message_text(
-            f"❌ <b>تعذر الحصول على بيانات حقيقية</b>\n\n<code>{escape(str(e))}</code>\n\n"
-            "لم يتم استخدام بيانات عشوائية أو تجريبية.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_keyboard(),
+            f"❌ <b>تعذر الحصول على بيانات OTC حقيقية</b>\n\n<code>{escape(str(e))}</code>\n\nلم يتم استخدام بيانات عشوائية أو تجريبية.",
+            parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
         )
     except Exception as e:
-        await query.edit_message_text(
-            f"❌ حدث خطأ أثناء التحليل:\n<code>{escape(str(e))}</code>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_keyboard(),
-        )
+        await query.edit_message_text(f"❌ حدث خطأ أثناء التحليل:\n<code>{escape(str(e))}</code>", parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
 
 
 async def home_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
