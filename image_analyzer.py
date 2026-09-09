@@ -7,30 +7,33 @@ import httpx
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "google/gemini-2.5-flash"
+REQUIRED_KEYS = (
+    "asset", "timeframe", "image_quality", "trend", "structure", "momentum",
+    "volatility", "ema", "rsi", "macd", "support", "resistance",
+    "candle_patterns", "confluence", "signal", "direction", "confidence",
+    "reason", "risks",
+)
 
 SYSTEM_PROMPT = """
-You are an expert chart-vision and technical-analysis engine.
-Analyze ONLY the chart image supplied by the user. Do not invent unreadable values.
-This application is READ-ONLY: never place, open, close, or automate trades.
+You are a chart-vision technical-analysis engine.
+Analyze ONLY the supplied chart image. Never invent values that are unreadable.
+This application is strictly READ-ONLY: never place, open, close, or automate trades.
 
-Perform a deep but fast visual analysis:
-1) Identify symbol/asset and timeframe if visible; otherwise say unknown.
-2) Inspect the latest 15-30 visible candles and market structure: trend, HH/HL/LH/LL,
-   momentum, volatility, breakouts, pullbacks and rejection candles.
-3) Read visible indicators such as EMA 9/21/50, RSI, MACD, ATR, support/resistance.
-   Only report numerical values when they are actually readable.
-4) Identify important support/resistance and nearby reaction zones.
-5) Check candlestick patterns and confluence.
-6) Look for contradictions and image-quality limitations.
-7) Produce CALL, PUT, or NO TRADE. If evidence is weak, contradictory, cropped,
-   blurry, or indicators cannot be read reliably, choose NO TRADE.
-8) confidence is ANALYTICAL CONFIDENCE (0-100), NOT probability of profit.
-9) The requested horizon is 5 minutes, but do not claim certainty about future price.
+Inspect the visible candles, market structure, momentum, volatility, support/resistance,
+and visible indicators such as EMA, RSI and MACD. Identify contradictions and image
+quality limitations. If the image is blurry, cropped, ambiguous, or evidence conflicts,
+choose NO TRADE.
 
-Return STRICT JSON only, with exactly these keys:
+The requested horizon is 5 minutes. Do not claim certainty or guaranteed profit.
+confidence is analytical confidence from 0 to 100, NOT probability of profit.
+
+Return JSON only. Use exactly these keys:
 asset, timeframe, image_quality, trend, structure, momentum, volatility,
 ema, rsi, macd, support, resistance, candle_patterns, confluence,
 signal, direction, confidence, reason, risks
+
+signal must be exactly CALL, PUT, or NO TRADE.
+direction must be UP, DOWN, or NEUTRAL.
 """
 
 
@@ -42,14 +45,40 @@ def _data_url(image_bytes: bytes, mime_type: str) -> str:
 def _parse_json(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:].strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("Vision model did not return JSON")
-    return json.loads(text[start:end + 1])
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("Vision model did not return valid JSON")
+        obj = json.loads(text[start:end + 1])
+
+    if not isinstance(obj, dict):
+        raise ValueError("Vision response is not a JSON object")
+    return obj
+
+
+def _normalize_result(result: dict[str, Any], model: str) -> dict[str, Any]:
+    normalized = {key: result.get(key) for key in REQUIRED_KEYS}
+    if normalized["signal"] not in {"CALL", "PUT", "NO TRADE"}:
+        normalized["signal"] = "NO TRADE"
+    if normalized["direction"] not in {"UP", "DOWN", "NEUTRAL"}:
+        normalized["direction"] = {
+            "CALL": "UP", "PUT": "DOWN", "NO TRADE": "NEUTRAL"
+        }[normalized["signal"]]
+    try:
+        normalized["confidence"] = max(0, min(100, int(normalized["confidence"] or 0)))
+    except (TypeError, ValueError):
+        normalized["confidence"] = 0
+    normalized["model"] = model
+    return normalized
 
 
 async def analyze_chart_image(image_bytes: bytes, mime_type: str, api_key: str) -> dict[str, Any]:
@@ -57,8 +86,10 @@ async def analyze_chart_image(image_bytes: bytes, mime_type: str, api_key: str) 
         raise ValueError("Empty image")
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY is not configured")
+    if not mime_type.startswith("image/"):
+        raise ValueError("Unsupported image MIME type")
 
-    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     payload = {
         "model": model,
         "messages": [
@@ -66,15 +97,14 @@ async def analyze_chart_image(image_bytes: bytes, mime_type: str, api_key: str) 
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyze this trading chart image deeply and return the required JSON."},
+                    {"type": "text", "text": "Analyze this chart image and return the required JSON."},
                     {"type": "image_url", "image_url": {"url": _data_url(image_bytes, mime_type)}},
                 ],
             },
         ],
         "temperature": 0,
-        "max_tokens": 1200,
+        "max_tokens": 1400,
     }
-
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -90,18 +120,12 @@ async def analyze_chart_image(image_bytes: bytes, mime_type: str, api_key: str) 
     choices = data.get("choices") or []
     if not choices:
         raise ValueError("OpenRouter returned no choices")
-    message = choices[0].get("message", {})
-    content = message.get("content", "")
+    content = choices[0].get("message", {}).get("content", "")
     if isinstance(content, list):
-        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")
+        )
+    if not str(content).strip():
+        raise ValueError("OpenRouter returned empty Vision content")
 
-    result = _parse_json(str(content))
-    signal = result.get("signal")
-    if signal not in {"CALL", "PUT", "NO TRADE"}:
-        result["signal"] = "NO TRADE"
-    try:
-        result["confidence"] = max(0, min(100, int(result.get("confidence", 0))))
-    except (TypeError, ValueError):
-        result["confidence"] = 0
-    result["model"] = model
-    return result
+    return _normalize_result(_parse_json(str(content)), model)
