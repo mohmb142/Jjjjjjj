@@ -1,51 +1,89 @@
 const image = document.getElementById('image');
 const out = document.getElementById('out');
 const key = document.getElementById('key');
+const button = document.getElementById('go');
 
-document.getElementById('go').onclick = async () => {
+button.addEventListener('click', async () => {
   const file = image.files[0];
-  if (!file) { out.textContent = 'اختر صورة شارت أولاً.'; return; }
+  if (!file) {
+    out.textContent = 'اختر صورة شارت أولاً.';
+    return;
+  }
+
+  if (!file.type.startsWith('image/')) {
+    out.textContent = '❌ الملف المختار ليس صورة.';
+    return;
+  }
+
+  if (file.size > 12 * 1024 * 1024) {
+    out.textContent = '❌ حجم الصورة أكبر من 12MB.';
+    return;
+  }
+
+  button.disabled = true;
   out.textContent = '🔍 جاري تحليل صورة الشارت عبر Vision...';
+
   try {
     const form = new FormData();
     form.append('file', file);
-    const query = key.value.trim() ? '?openrouter_key=' + encodeURIComponent(key.value.trim()) : '';
-    const r = await fetch('/api/analyze-image' + query, { method: 'POST', body: form });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || 'تعذر التحليل');
-    out.textContent = formatResult(d);
-  } catch (e) {
-    out.textContent = '❌ خطأ: ' + e.message;
+
+    const headers = {};
+    const apiKey = key.value.trim();
+    if (apiKey) headers['X-OpenRouter-Key'] = apiKey;
+
+    const response = await fetch('/api/analyze-image', {
+      method: 'POST',
+      body: form,
+      headers,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || `HTTP ${response.status}`);
+    }
+
+    out.textContent = formatResult(data);
+  } catch (error) {
+    out.textContent = '❌ خطأ: ' + (error.message || error);
+  } finally {
+    button.disabled = false;
   }
-};
+});
+
+function value(v, fallback = 'غير واضح') {
+  return v === null || v === undefined || v === '' ? fallback : String(v);
+}
 
 function formatResult(d) {
   return [
     '📊 نتيجة تحليل الشارت',
     '━━━━━━━━━━━━━━━━━━━━',
-    `الأصل: ${d.asset ?? 'غير واضح'}`,
-    `الفريم: ${d.timeframe ?? 'غير واضح'}`,
-    `جودة الصورة: ${d.image_quality ?? 'غير واضح'}`,
+    `الأصل: ${value(d.asset)}`,
+    `الفريم: ${value(d.timeframe)}`,
+    `جودة الصورة: ${value(d.image_quality)}`,
     '',
-    `🎯 الإشارة: ${d.signal ?? 'NO TRADE'}`,
-    `🧭 الاتجاه: ${d.direction ?? 'NEUTRAL'}`,
-    `🧠 الثقة التحليلية: ${d.confidence ?? 0}/100`,
+    `🎯 الإشارة: ${value(d.signal, 'NO TRADE')}`,
+    `🧭 الاتجاه: ${value(d.direction, 'NEUTRAL')}`,
+    `🧠 الثقة التحليلية: ${value(d.confidence, 0)}/100`,
+    `⏱ الأفق: ${value(d.duration_minutes, 5)} دقائق`,
     '',
-    `Trend: ${d.trend ?? 'غير واضح'}`,
-    `Structure: ${d.structure ?? 'غير واضح'}`,
-    `Momentum: ${d.momentum ?? 'غير واضح'}`,
-    `Volatility: ${d.volatility ?? 'غير واضح'}`,
-    `EMA: ${d.ema ?? 'غير واضح'}`,
-    `RSI: ${d.rsi ?? 'غير واضح'}`,
-    `MACD: ${d.macd ?? 'غير واضح'}`,
-    `Support: ${d.support ?? 'غير واضح'}`,
-    `Resistance: ${d.resistance ?? 'غير واضح'}`,
-    `Candles: ${d.candle_patterns ?? 'غير واضح'}`,
+    `Trend: ${value(d.trend)}`,
+    `Structure: ${value(d.structure)}`,
+    `Momentum: ${value(d.momentum)}`,
+    `Volatility: ${value(d.volatility)}`,
+    `EMA: ${value(d.ema)}`,
+    `RSI: ${value(d.rsi)}`,
+    `MACD: ${value(d.macd)}`,
+    `Support: ${value(d.support)}`,
+    `Resistance: ${value(d.resistance)}`,
+    `Candles: ${value(d.candle_patterns)}`,
     '',
-    `🧩 التوافق: ${d.confluence ?? 'غير واضح'}`,
-    `🧠 السبب: ${d.reason ?? 'غير واضح'}`,
-    `⚠️ المخاطر: ${d.risks ?? 'غير واضح'}`,
+    `🧩 التوافق: ${value(d.confluence)}`,
+    `🧠 السبب: ${value(d.reason)}`,
+    `⚠️ المخاطر: ${value(d.risks)}`,
     '',
-    '⚠️ تحليل فقط — لا يتم تنفيذ أي صفقة.'
+    `🤖 النموذج: ${value(d.model)}`,
+    '',
+    value(d.disclaimer, '⚠️ تحليل فقط — لا يتم تنفيذ أي صفقة.'),
   ].join('\n');
 }
