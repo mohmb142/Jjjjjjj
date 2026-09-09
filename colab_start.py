@@ -13,20 +13,15 @@ def ask_secret(label, env_name, required=True):
 
 def main():
     print("=" * 60)
-    print("POCKET OTC AI ANALYZER — GOOGLE COLAB")
+    print("POCKET OTC AI IMAGE ANALYZER — GOOGLE COLAB")
     print("READ-ONLY: لا يتم تنفيذ أي صفقة")
     print("=" * 60)
 
     ask_secret("🔐 أدخل Telegram Bot Token: ", "TELEGRAM_BOT_TOKEN")
-    ask_secret("🔐 أدخل Pocket Option SSID: ", "POCKET_OPTION_SSID")
+    ask_secret("🔐 أدخل OpenRouter API Key: ", "OPENROUTER_API_KEY")
 
-    use_openrouter = input("🧠 تفعيل OpenRouter؟ [y/N]: ").strip().lower() == "y"
-    if use_openrouter:
-        ask_secret("🔐 أدخل OpenRouter API Key: ", "OPENROUTER_API_KEY")
-        model = input(
-            "🤖 اسم الموديل [openai/gpt-oss-120b:free]: "
-        ).strip() or "openai/gpt-oss-120b:free"
-        os.environ["OPENROUTER_MODEL"] = model
+    model = input("🤖 Vision model [google/gemini-2.5-flash]: ").strip() or "google/gemini-2.5-flash"
+    os.environ["OPENROUTER_MODEL"] = model
 
     print("\n🚀 بدء بوت Telegram...")
     from telegram_bot import run
