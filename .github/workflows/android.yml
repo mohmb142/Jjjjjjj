@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Pocket OTC AI Analyzer APK
 
 on:
   push:
@@ -27,9 +27,11 @@ jobs:
           gradle-version: '8.7'
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
+      - name: Verify APK
+        run: test -s app/build/outputs/apk/debug/app-debug.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: phone-agent-debug-apk
+          name: pocket-otc-ai-analyzer-debug-apk
           path: phone-agent/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
