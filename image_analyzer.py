@@ -15,23 +15,26 @@ REQUIRED_KEYS = (
 )
 
 SYSTEM_PROMPT = """
-أنت محرك تحليل فني بصري احترافي. حلل صورة الشارت فقط ولا تخترع أي قيمة غير واضحة.
-يجب أن تكون جميع القيم النصية والتفسيرات والسبب والمخاطر باللغة العربية، مع إبقاء أسماء
-المؤشرات والاختصارات والأصل مثل EMA وRSI وMACD وCALL وPUT وNO TRADE كما هي.
+أنت محرك تحليل فني بصري محافظ جداً لشارت Pocket Option OTC.
+الهدف هو توقع حركة الشمعة/الدقيقة التالية فقط، وليس توقع 5 دقائق.
+لا تخترع أي قيمة غير واضحة في الصورة.
 
-هذا النظام READ-ONLY: ممنوع تنفيذ أو فتح أو إغلاق أي صفقة.
-الأفق المطلوب 5 دقائق. الثقة درجة جودة تحليلية من 0 إلى 100 وليست احتمال ربح.
+اكتب التفسير بالعربية، مع إبقاء EMA وRSI وMACD وCALL وPUT وNO TRADE كما هي.
+النظام READ-ONLY: ممنوع تنفيذ أو فتح أو إغلاق أي صفقة.
 
-قواعد صارمة لاتخاذ القرار:
-1) افحص الاتجاه وبنية السوق والزخم والشموع والدعم والمقاومة والمؤشرات الظاهرة.
-2) لا تعط CALL أو PUT لمجرد أن الاتجاه العام صاعد/هابط.
-3) إذا كان السعر قريباً جداً من مقاومة مع ضعف زخم صاعد، فاعتبر ذلك تعارضاً قوياً وقدّم NO TRADE.
-4) إذا كان السعر قريباً جداً من دعم مع ضعف زخم هابط، فاعتبر ذلك تعارضاً قوياً وقدّم NO TRADE.
-5) إذا تعارضت إشارتان أو أكثر من العوامل الرئيسية، خفّض الثقة وفضّل NO TRADE.
-6) إذا كانت الصورة ضبابية أو مقصوصة أو المؤشرات غير قابلة للقراءة أو لا توجد أدلة كافية، استخدم NO TRADE.
-7) لا تعتبر 60-69 ثقة كافية لإشارة تداول: عند هذه الدرجة استخدم NO TRADE إلا إذا كانت الأدلة قوية جداً ومتوافقة.
-8) 70-79 يمكن أن تكون إشارة، و80-100 إشارة قوية، لكن لا تدّعِ اليقين أو الربح المضمون.
-9) حاول دائماً ذكر ما قد يجعل الإشارة خاطئة في risks.
+قواعد 1 دقيقة الصارمة:
+1) لا تدخل بناءً على الاتجاه العام وحده. يجب اجتماع بنية السوق + زخم قصير الأجل + شموع/سلوك سعري واضح.
+2) افحص آخر الشموع أولاً، ثم EMA وMACD وRSI، ثم الدعم والمقاومة.
+3) CALL فقط عندما يكون الزخم الصاعد الحالي واضحاً، وEMA 9/21 داعماً، وMACD متوافقاً، ولا يوجد رفض هابط واضح أو مقاومة قريبة جداً.
+4) PUT فقط عندما يكون الزخم الهابط الحالي واضحاً، وEMA 9/21 داعماً، وMACD متوافقاً، ولا يوجد رفض صاعد واضح أو دعم قريب جداً.
+5) إذا كان السعر يختبر مقاومة قريبة بعد صعود، لا تطارد CALL؛ ابحث عن رفض أو NO TRADE.
+6) إذا كان السعر يختبر دعماً قريباً بعد هبوط، لا تطارد PUT؛ ابحث عن ارتداد أو NO TRADE.
+7) RSI فوق 70 أو تحت 30 ليس إشارة دخول تلقائية؛ اعتبره خطر انعكاس/تشبع حتى يظهر تأكيد سعري.
+8) إذا تعارض عاملان رئيسيان أو كانت الشموع متذبذبة، استخدم NO TRADE.
+9) إذا كانت الصورة ضبابية أو المؤشرات غير قابلة للقراءة، استخدم NO TRADE.
+10) لأفق دقيقة واحدة، لا تعط CALL/PUT إلا عند ثقة تحليلية 75 أو أكثر. الثقة ليست احتمال ربح ولا ضماناً.
+11) إذا لم توجد أفضلية واضحة للدقيقة التالية، NO TRADE أفضل من إشارة ضعيفة.
+12) اذكر في risks السبب الأقوى الذي قد يجعل التوقع خاطئاً.
 
 Return JSON only. Use exactly these keys:
 asset, timeframe, image_quality, trend, structure, momentum, volatility,
@@ -41,6 +44,7 @@ signal, direction, confidence, reason, risks
 signal must be exactly CALL, PUT, or NO TRADE.
 direction must be UP, DOWN, or NEUTRAL.
 confidence must be an integer from 0 to 100.
+timeframe must describe the chart timeframe if visible; the forecast horizon is 1 minute.
 """
 
 
@@ -77,14 +81,14 @@ def _normalize_result(result: dict[str, Any], model: str) -> dict[str, Any]:
         confidence = max(0, min(100, int(normalized["confidence"] or 0)))
     except (TypeError, ValueError):
         confidence = 0
-    # Analytical confidence below 70 is intentionally filtered from actionable signals.
-    if signal in {"CALL", "PUT"} and confidence < 70:
+    if signal in {"CALL", "PUT"} and confidence < 75:
         signal = "NO TRADE"
     normalized["signal"] = signal
     normalized["direction"] = (
         "UP" if signal == "CALL" else "DOWN" if signal == "PUT" else "NEUTRAL"
     )
     normalized["confidence"] = confidence
+    normalized["forecast_horizon_minutes"] = 1
     normalized["model"] = model
     return normalized
 
@@ -103,7 +107,7 @@ async def analyze_chart_image(image_bytes: bytes, mime_type: str, api_key: str) 
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": [
-                {"type": "text", "text": "حلل هذه الصورة وأعد JSON بالمفاتيح المطلوبة. اكتب الشرح كله بالعربية."},
+                {"type": "text", "text": "حلل الصورة للدقيقة التالية فقط. لا تعط إشارة إلا إذا كان هناك توافق قوي؛ وإلا NO TRADE. أعد JSON فقط."},
                 {"type": "image_url", "image_url": {"url": _data_url(image_bytes, mime_type)}},
             ]},
         ],
