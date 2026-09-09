@@ -11,8 +11,7 @@ DEFAULT_MODEL = "google/gemini-2.5-flash"
 def _parse_json(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
-        lines = text.splitlines()
-        lines = lines[1:] if lines else lines
+        lines = text.splitlines()[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
@@ -33,19 +32,32 @@ async def refine_with_openrouter(result: dict[str, Any], analysis: dict[str, Any
         raise ValueError("OPENROUTER_API_KEY is not configured")
 
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    prompt = (
-        "Review this READ-ONLY technical analysis. Do not execute or promise a trade. "
-        "Return JSON with only signal, direction, confidence, and reason. "
-        "signal must be CALL, PUT, or NO TRADE; direction UP, DOWN, or NEUTRAL; "
-        "confidence is analytical confidence 0-100. If evidence conflicts, use NO TRADE.\n"
-        f"Local result: {json.dumps(result, ensure_ascii=False)}\n"
-        f"Indicators: {json.dumps(analysis, ensure_ascii=False)}"
-    )
+    prompt = """
+أنت المراجع النهائي لتحليل فني قائم على بيانات شموع حقيقية.
+اكتب الرد والسبب باللغة العربية فقط، مع إبقاء CALL وPUT وNO TRADE وUP وDOWN كما هي.
+هذه مراجعة READ-ONLY وليست تنفيذًا لأي صفقة.
+
+لا تعتمد على الاتجاه وحده. افحص توافق EMA وRSI وMACD وعدد الشموع الصاعدة/الهابطة،
+وابحث عن تعارضات الزخم ومناطق الدعم والمقاومة. إذا كان السعر قريبًا من دعم/مقاومة
+أو كانت المؤشرات متعارضة، فالأفضل NO TRADE.
+
+قواعد القرار:
+- لا تعتمد إشارة أقل من 70 كثقة تحليلية.
+- إذا كانت الأدلة غير كافية أو متعارضة بشكل مهم، استخدم NO TRADE.
+- لا ترفع الثقة لمجرد أن الاتجاه واضح.
+- confidence درجة جودة التحليل وليست احتمال ربح.
+
+أعد JSON فقط بهذه المفاتيح:
+signal, direction, confidence, reason
+"""
+    prompt += f"\nنتيجة المحرك المحلي: {json.dumps(result, ensure_ascii=False)}"
+    prompt += f"\nالبيانات والمؤشرات: {json.dumps(analysis, ensure_ascii=False)}"
+
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": prompt}],
         "temperature": 0,
-        "max_tokens": 500,
+        "max_tokens": 600,
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -53,7 +65,6 @@ async def refine_with_openrouter(result: dict[str, Any], analysis: dict[str, Any
         "HTTP-Referer": "https://github.com/mohmb142/Jjjjjjj",
         "X-Title": "Pocket OTC AI Analyzer",
     }
-
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(ENDPOINT, headers=headers, json=payload)
         response.raise_for_status()
@@ -70,13 +81,15 @@ async def refine_with_openrouter(result: dict[str, Any], analysis: dict[str, Any
     signal = obj.get("signal")
     if signal not in {"CALL", "PUT", "NO TRADE"}:
         raise ValueError("Invalid OpenRouter signal")
-    direction = obj.get("direction")
-    if direction not in {"UP", "DOWN", "NEUTRAL"}:
-        direction = {"CALL": "UP", "PUT": "DOWN", "NO TRADE": "NEUTRAL"}[signal]
     try:
         confidence = max(0, min(100, int(obj.get("confidence", 0))))
     except (TypeError, ValueError):
         confidence = 0
+
+    # The reviewer cannot turn a weak signal into an actionable one.
+    if confidence < 70:
+        signal = "NO TRADE"
+    direction = "UP" if signal == "CALL" else "DOWN" if signal == "PUT" else "NEUTRAL"
 
     return {
         "signal": signal,
