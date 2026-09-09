@@ -1,1 +1,14 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pocket OTC AI Analyzer</title><link rel="stylesheet" href="/static/style.css"></head><body><main><h1>Pocket OTC AI Analyzer</h1><div class="safe">تحليل فقط — لا يتم تنفيذ أي صفقة.</div><label>الزوج<select id="pair"></select></label><label>OpenRouter API Key (اختياري)<input id="key" type="password" autocomplete="off"></label><button id="go">Analyze</button><pre id="out">جاهز.</pre></main><script src="/static/app.js"></script></body></html>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pocket OTC AI Image Analyzer</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main>
+<h1>📊 Pocket OTC AI Image Analyzer</h1>
+<div class="safe">🔒 تحليل بصري فقط — لا يتم تنفيذ أي صفقة.</div>
+<label>صورة الشارت
+<input id="image" type="file" accept="image/*">
+</label>
+<label>OpenRouter API Key (اختياري إذا كان مضبوطًا على الخادم)
+<input id="key" type="password" autocomplete="off" placeholder="sk-or-..."></label>
+<button id="go">🔎 تحليل الصورة</button>
+<pre id="out">أرسل صورة شارت واضحة ثم اضغط تحليل.</pre>
+</main><script src="/static/app.js"></script></body></html>
