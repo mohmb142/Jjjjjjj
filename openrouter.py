@@ -27,37 +27,88 @@ def _parse_json(text: str) -> dict[str, Any]:
     return obj
 
 
+def _normalize(signal: Any, confidence: Any, reason: Any) -> dict[str, Any]:
+    if signal not in {"CALL", "PUT", "NO TRADE"}:
+        signal = "NO TRADE"
+    try:
+        confidence = max(0, min(100, int(confidence or 0)))
+    except (TypeError, ValueError):
+        confidence = 0
+    if confidence < 70:
+        signal = "NO TRADE"
+    return {
+        "signal": signal,
+        "direction": "UP" if signal == "CALL" else "DOWN" if signal == "PUT" else "NEUTRAL",
+        "confidence": confidence,
+        "reason": str(reason or "لا يوجد سبب إضافي."),
+    }
+
+
 async def refine_with_openrouter(result: dict[str, Any], analysis: dict[str, Any], api_key: str) -> dict[str, Any]:
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY is not configured")
-
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     prompt = """
 أنت المراجع النهائي لتحليل فني قائم على بيانات شموع حقيقية.
 اكتب الرد والسبب باللغة العربية فقط، مع إبقاء CALL وPUT وNO TRADE وUP وDOWN كما هي.
 هذه مراجعة READ-ONLY وليست تنفيذًا لأي صفقة.
 
-لا تعتمد على الاتجاه وحده. افحص توافق EMA وRSI وMACD وعدد الشموع الصاعدة/الهابطة،
-وابحث عن تعارضات الزخم ومناطق الدعم والمقاومة. إذا كان السعر قريبًا من دعم/مقاومة
-أو كانت المؤشرات متعارضة، فالأفضل NO TRADE.
+افحص توافق EMA وRSI وMACD والزخم والشموع والدعم والمقاومة. إذا كانت الأدلة غير كافية
+أو متعارضة بشكل مهم، استخدم NO TRADE. لا تعتمد على الاتجاه وحده.
+لا تعتمد إشارة أقل من 70 كثقة تحليلية، ولا تدّعي احتمال ربح أو ضمان.
 
-قواعد القرار:
-- لا تعتمد إشارة أقل من 70 كثقة تحليلية.
-- إذا كانت الأدلة غير كافية أو متعارضة بشكل مهم، استخدم NO TRADE.
-- لا ترفع الثقة لمجرد أن الاتجاه واضح.
-- confidence درجة جودة التحليل وليست احتمال ربح.
-
-أعد JSON فقط بهذه المفاتيح:
-signal, direction, confidence, reason
+أعد JSON فقط: signal, direction, confidence, reason
 """
     prompt += f"\nنتيجة المحرك المحلي: {json.dumps(result, ensure_ascii=False)}"
     prompt += f"\nالبيانات والمؤشرات: {json.dumps(analysis, ensure_ascii=False)}"
+    return await _call(prompt, api_key, model)
 
+
+async def refine_combined_with_openrouter(
+    vision: dict[str, Any],
+    market_result: dict[str, Any],
+    analysis: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """Final fusion of independent visual and market-data analyses."""
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY is not configured")
+    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    prompt = """
+أنت طبقة الدمج النهائية لمحلل Pocket OTC. لديك مصدران مستقلان:
+1) تحليل بصري للصورة بواسطة Vision.
+2) تحليل رقمي لشموع مغلقة ومؤشرات محسوبة.
+
+مهم جدًا: لا تنفذ أي صفقة. أعد قرارًا تحليليًا فقط.
+
+قواعد الدمج الصارمة:
+- إذا كان المصدران متوافقين CALL أو متوافقين PUT، ولا توجد علامة تعارض قوية في
+  الدعم/المقاومة أو الزخم، يمكن اعتماد الإشارة مع ثقة لا تتجاوز جودة الأدلة.
+- إذا قال أحدهما CALL والآخر PUT، فالقرار NO TRADE.
+- إذا كان أحدهما NO TRADE، فلا تتجاهله؛ استخدم NO TRADE إلا إذا كان السبب ضعيفًا
+  بوضوح وكان المصدر الآخر قويًا جدًا ومتسقًا مع البيانات.
+- قرب السعر من مقاومة مع ضعف CALL أو قربه من دعم مع ضعف PUT = NO TRADE.
+- تعارض عاملين رئيسيين أو أكثر = NO TRADE.
+- confidence أقل من 70 = NO TRADE.
+- لا تعتبر confidence احتمال ربح ولا ضمانًا.
+- الأفق التحليلي 5 دقائق.
+
+أعد JSON فقط بهذه المفاتيح:
+signal, direction, confidence, reason
+واكتب reason بالعربية.
+"""
+    prompt += f"\nالتحليل البصري: {json.dumps(vision, ensure_ascii=False)}"
+    prompt += f"\nالتحليل الرقمي: {json.dumps(market_result, ensure_ascii=False)}"
+    prompt += f"\nالمؤشرات والشموع: {json.dumps(analysis, ensure_ascii=False)}"
+    return await _call(prompt, api_key, model)
+
+
+async def _call(prompt: str, api_key: str, model: str) -> dict[str, Any]:
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": prompt}],
         "temperature": 0,
-        "max_tokens": 600,
+        "max_tokens": 700,
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -65,11 +116,10 @@ signal, direction, confidence, reason
         "HTTP-Referer": "https://github.com/mohmb142/Jjjjjjj",
         "X-Title": "Pocket OTC AI Analyzer",
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         response = await client.post(ENDPOINT, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
-
     choices = data.get("choices") or []
     if not choices:
         raise ValueError("OpenRouter returned no choices")
@@ -77,23 +127,4 @@ signal, direction, confidence, reason
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     obj = _parse_json(str(content))
-
-    signal = obj.get("signal")
-    if signal not in {"CALL", "PUT", "NO TRADE"}:
-        raise ValueError("Invalid OpenRouter signal")
-    try:
-        confidence = max(0, min(100, int(obj.get("confidence", 0))))
-    except (TypeError, ValueError):
-        confidence = 0
-
-    # The reviewer cannot turn a weak signal into an actionable one.
-    if confidence < 70:
-        signal = "NO TRADE"
-    direction = "UP" if signal == "CALL" else "DOWN" if signal == "PUT" else "NEUTRAL"
-
-    return {
-        "signal": signal,
-        "direction": direction,
-        "confidence": confidence,
-        "reason": str(obj.get("reason") or "لا يوجد سبب إضافي."),
-    }
+    return _normalize(obj.get("signal"), obj.get("confidence"), obj.get("reason"))
