@@ -1,0 +1,32 @@
+import os
+from datetime import datetime, timezone
+from typing import Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+from pocket_data import PocketDataError, get_closed_candles
+from indicators import analyze_candles
+from signal_engine import generate_signal
+from openrouter import refine_with_openrouter
+load_dotenv()
+app=FastAPI(title='Pocket OTC AI Analyzer',version='1.0.0')
+app.mount('/static',StaticFiles(directory='static'),name='static')
+PAIRS=['EURUSD_otc','GBPUSD_otc','USDJPY_otc','USDCHF_otc','AUDUSD_otc','USDCAD_otc','EURGBP_otc','EURJPY_otc','EURCHF_otc','EURAUD_otc','EURNZD_otc','EURCAD_otc']
+@app.get('/')
+async def index(): return FileResponse('static/index.html')
+@app.get('/api/pairs')
+async def pairs(): return {'pairs':PAIRS}
+@app.get('/api/analyze')
+async def analyze(pair:str,openrouter_key:Optional[str]=None):
+    if pair not in PAIRS: raise HTTPException(400,'Unsupported pair')
+    try: candles=await get_closed_candles(pair)
+    except PocketDataError as e: raise HTTPException(503,str(e))
+    if len(candles)<60: raise HTTPException(503,f'Insufficient real candles: {len(candles)}')
+    analysis=analyze_candles(candles); result=generate_signal(analysis); source='LOCAL'
+    key=openrouter_key or os.getenv('OPENROUTER_API_KEY')
+    if key:
+        try: result=await refine_with_openrouter(result,analysis,key); source='OPENROUTER'
+        except Exception: source='LOCAL'
+    result.update(source=source,pair=pair,analysis_time=datetime.now(timezone.utc).isoformat(),duration_minutes=5,disclaimer='تحليل فقط — لا يتم تنفيذ أي صفقة.')
+    return result
