@@ -5,11 +5,23 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from image_analyzer import analyze_chart_image
-from indicators import analyze_candles
 from pocket_data import PocketDataError, get_closed_candles
 from historical_pattern import analyze_historical_pattern
 
 PAIRS={"EURUSD_OTC":"EURUSD_otc","GBPUSD_OTC":"GBPUSD_otc","USDJPY_OTC":"USDJPY_otc","USDCHF_OTC":"USDCHF_otc","AUDUSD_OTC":"AUDUSD_otc","USDCAD_OTC":"USDCAD_otc","EURGBP_OTC":"EURGBP_otc","EURJPY_OTC":"EURJPY_otc","EURCHF_OTC":"EURCHF_otc","EURAUD_OTC":"EURAUD_otc","EURNZD_OTC":"EURNZD_otc","EURCAD_OTC":"EURCAD_otc"}
+
+def normalize_pair(value):
+    """Map common Vision spellings to the exact OTC symbol used by the data API."""
+    raw=str(value or "").strip().upper()
+    compact=raw.replace("/","").replace("-","").replace("_","").replace(" ","")
+    if compact.endswith("OTC"):
+        compact=compact[:-3]
+    for display, api_symbol in PAIRS.items():
+        if display.replace("_OTC","")==compact:
+            return api_symbol
+        if api_symbol.upper().replace("_","")==raw.replace(" ",""):
+            return api_symbol
+    return ""
 
 def format_result(r):
     s=str(r.get("signal","NO TRADE")); icon="🟢" if s=="CALL" else "🔴" if s=="PUT" else "🟡"
@@ -21,7 +33,7 @@ def format_result(r):
     return f"{icon} <b>الإشارة: {escape(s)}</b>\n{pl}📊 الثقة الإحصائية: <b>{escape(str(r.get('confidence',0)))}%</b>\n📈 الاتجاه: {escape(str(r.get('direction','NEUTRAL')))}\n⏱️ الأفق: <b>1 دقيقة</b>{stats}\n\n🧠 <b>السبب:</b>\n{escape(str(r.get('reason','غير متوفر')))}\n\n⚠️ تحليل إحصائي فقط — لا يتم تنفيذ أي صفقة ولا توجد ضمانات للنتيجة."
 
 async def start(update,context):
-    if update.message: await update.message.reply_text("🤖 <b>Pocket OTC AI Analyzer</b>\n\nأرسل صورة شارت واضحة. سيستخدم البوت الآن مطابقة الأنماط التاريخية بدلاً من الاعتماد على المؤشرات وحدها.\n\nلا ينفذ صفقات.",parse_mode="HTML")
+    if update.message: await update.message.reply_text("🤖 <b>Pocket OTC AI Analyzer</b>\n\nأرسل صورة شارت واضحة. سيستخدم البوت مطابقة الأنماط التاريخية بدلاً من الاعتماد على المؤشرات وحدها.\n\nلا ينفذ صفقات.",parse_mode="HTML")
 
 async def help_cmd(update,context):
     if update.message: await update.message.reply_text("أرسل صورة الشارت مباشرة، واجعل الزوج والفريم ظاهرين بوضوح. المحرك يبحث عن حالات تاريخية مشابهة، وإذا لم يجد عينة كافية يعيد NO TRADE.")
@@ -33,14 +45,14 @@ async def photo(update:Update,context:ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
         f=await context.bot.get_file(update.message.photo[-1].file_id); data=await f.download_as_bytearray()
-        vision=await analyze_chart_image(bytes(data),"image/jpeg",key); pair=str(vision.get("asset") or "").strip()
-        if pair not in PAIRS.values():
-            vision["reason"]="لم أتعرف على زوج OTC مدعوم من الصورة؛ أظهر اسم الزوج بوضوح."
-            await update.message.reply_text(format_result(vision),parse_mode="HTML"); return
+        vision=await analyze_chart_image(bytes(data),"image/jpeg",key)
+        detected=str(vision.get("asset") or "").strip()
+        pair=normalize_pair(detected)
+        if not pair:
+            await update.message.reply_text(format_result({"signal":"NO TRADE","confidence":0,"direction":"NEUTRAL","reason":f"لم يتم التعرف على زوج OTC مدعوم. القيمة التي قرأها نموذج Vision: {detected or 'غير موجودة'}. أرسل صورة يظهر فيها اسم الزوج بوضوح.","pair":detected}),parse_mode="HTML")
+            return
         try:
             candles=await get_closed_candles(pair)
-            # Pattern matching is the primary decision engine. Indicators are retained
-            # only as contextual data and are not allowed to override historical evidence.
             pattern=analyze_historical_pattern(candles, pair)
             pattern.update(pair=pair, source="HISTORICAL_PATTERN_MATCHING", analysis_time=datetime.now(timezone.utc).isoformat())
             await update.message.reply_text(format_result(pattern),parse_mode="HTML")
