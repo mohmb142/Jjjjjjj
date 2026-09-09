@@ -15,6 +15,7 @@ load_dotenv()
 
 _bot_thread = None
 _bot_lock = threading.Lock()
+EXPIRY_MINUTES = 1
 
 
 def get_config():
@@ -70,13 +71,13 @@ def format_analysis(result):
     return (
         "<b>📊 تحليل الشارت</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"💹 الأصل: <b>{_fmt(result.get('asset'))}</b>\n"
+        f"💹 الأصل: <b>{_fmt(result.get('asset') or result.get('pair'))}</b>\n"
         f"⏱ الفريم: <b>{_fmt(result.get('timeframe'))}</b>\n"
         f"🖼️ جودة الصورة: {_fmt(result.get('image_quality'))}\n\n"
         f"🎯 الإشارة: {icon} <b>{escape(str(signal))}</b>\n"
         f"🧭 الاتجاه: <b>{_fmt(result.get('direction'))}</b>\n"
         f"📈 الثقة التحليلية: <b>{confidence}/100</b>\n"
-        "⏱ الأفق: <b>5 دقائق</b>\n\n"
+        f"⏱ الأفق: <b>{EXPIRY_MINUTES} دقيقة</b>\n\n"
         "<b>🔬 التحليل الفني</b>\n"
         f"Trend: {_fmt(result.get('trend'))}\n"
         f"Structure: {_fmt(result.get('structure'))}\n"
@@ -137,7 +138,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>📡 حالة النظام</b>\n\n"
             f"{'🟢' if token else '🔴'} Telegram Token: {'موجود' if token else 'مفقود'}\n"
             f"{'🟢' if key else '🔴'} OpenRouter Vision: {'مفعّل' if key else 'غير مفعّل'}\n"
-            "🟢 الوضع: READ-ONLY\n\n"
+            "🟢 الوضع: READ-ONLY\n"
+            f"⏱️ أفق التحليل: {EXPIRY_MINUTES} دقيقة\n\n"
             "لا يتم فتح أو إغلاق أو تنفيذ أي صفقة.",
             parse_mode=ParseMode.HTML,
             reply_markup=main_keyboard(),
