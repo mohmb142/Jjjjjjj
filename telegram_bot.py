@@ -1,4 +1,3 @@
-import asyncio
 import os
 from datetime import datetime
 from html import escape
@@ -10,7 +9,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from indicators import analyze_candles
 from openrouter import refine_with_openrouter
-from pocket_data import PocketDataError, get_closed_candles
+from pocket_data import PocketDataError, get_closed_candles, get_live_price
 from signal_engine import generate_signal
 
 load_dotenv()
@@ -51,10 +50,11 @@ def home_text():
     return (
         "<b>📊 POCKET OTC AI ANALYZER</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🟢 محرك التحليل: Google Colab\n"
-        "📡 البيانات: Pocket Option\n"
+        "🟢 المحرك: Google Colab\n"
+        "📡 المصدر: Pocket Option WebSocket\n"
+        "💹 السعر: بث حي مباشر\n"
         "🧠 التحليل: مؤشرات فنية + اختياري OpenRouter\n\n"
-        "اختر زوجًا لبدء تحليل آخر الشموع المغلقة.\n\n"
+        "اختر زوجًا لقراءة السعر والشموع المغلقة وتحليلها.\n\n"
         "<b>⚠️ تحليل فقط — لا يتم تنفيذ أي صفقة.</b>"
     )
 
@@ -68,6 +68,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def analyze_pair(pair: str):
     candles = await get_closed_candles(pair)
     analysis = analyze_candles(candles)
+    try:
+        live_price = await get_live_price(pair)
+    except PocketDataError:
+        live_price = float(candles[-1]["close"])
+    analysis["live_price"] = live_price
+
     result = generate_signal(analysis)
     source = "LOCAL"
     if OPENROUTER_KEY:
@@ -89,7 +95,8 @@ def format_result(pair, analysis, result, source):
     return (
         f"<b>📊 {escape(PAIR_LABELS.get(pair, pair))} OTC</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 السعر: <code>{analysis['price']:.6f}</code>\n\n"
+        f"💹 السعر المباشر: <code>{analysis['live_price']:.6f}</code>\n"
+        f"🕯️ إغلاق آخر شمعة: <code>{analysis['price']:.6f}</code>\n\n"
         f"🎯 الإشارة: {icon} <b>{signal}</b>\n"
         f"🧭 الاتجاه: <b>{direction}</b>\n"
         f"📈 الثقة التحليلية: <b>{confidence}/100</b>\n"
@@ -122,6 +129,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>📡 حالة النظام</b>\n\n"
             "🟢 Telegram: متصل\n"
             "🟢 Google Colab: يعمل (هذه الجلسة)\n"
+            "🟢 مصدر الأسعار: Pocket Option WebSocket\n"
             f"🟢 SSID: {'مضبوط' if os.getenv('POCKET_OPTION_SSID', '').strip() else 'غير مضبوط'}\n"
             f"{'🟢' if OPENROUTER_KEY else '⚪'} OpenRouter: {'مفعّل' if OPENROUTER_KEY else 'اختياري/غير مفعّل'}\n\n"
             "⚠️ لا يتم تنفيذ الصفقات."
@@ -131,7 +139,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "about":
         await query.edit_message_text(
             "<b>ℹ️ عن Pocket OTC AI Analyzer</b>\n\n"
-            "يقرأ شموعًا مغلقة فقط ويحسب EMA/RSI/MACD/ATR والدعم والمقاومة وآخر 10 شموع.\n\n"
+            "يستخدم BinaryOptionsToolsV2 لقراءة بث الأسعار والشموع من Pocket Option عبر WebSocket.\n"
+            "يحسب EMA/RSI/MACD/ATR والدعم والمقاومة وآخر 10 شموع.\n\n"
             "النتيجة تحليلية وليست ضمانًا للربح أو احتمالًا للنجاح، ولا توجد أي وظائف لفتح أو إغلاق الصفقات.",
             parse_mode=ParseMode.HTML,
             reply_markup=main_keyboard(),
@@ -146,7 +155,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.edit_message_text(
-        f"⏳ جاري قراءة الشموع المغلقة وتحليل <b>{escape(PAIR_LABELS[pair])} OTC</b>...",
+        f"⏳ جاري قراءة السعر المباشر والشموع المغلقة لـ <b>{escape(PAIR_LABELS[pair])} OTC</b>...",
         parse_mode=ParseMode.HTML,
     )
     try:
