@@ -1,70 +1,91 @@
-package com.mohmb142.phoneagent
+package com.mohmb142.otcanalyzer
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import android.view.Gravity
 import android.widget.*
-import java.util.Locale
+import okhttp3.*
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
-    private lateinit var status: TextView
-    private var recognizer: SpeechRecognizer? = null
+    private val client = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).build()
+    private lateinit var apiUrl: EditText
+    private lateinit var apiKey: EditText
+    private lateinit var result: TextView
+    private var imageUri: Uri? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40,60,40,40) }
-        val title = TextView(this).apply { text = "Phone Agent"; textSize = 28f }
-        status = TextView(this).apply { text = "جاهز — اضغط الزر وتحدث"; textSize = 18f; setPadding(0,30,0,30) }
-        val listen = Button(this).apply { text = "🎙️ استمع للأمر" }
-        val access = Button(this).apply { text = "تفعيل صلاحية التحكم" }
-        box.addView(title); box.addView(status); box.addView(listen); box.addView(access); setContentView(box)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(28, 40, 28, 28) }
+        val title = TextView(this).apply { text = "📊 Pocket OTC AI Analyzer"; textSize = 25f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 18) }
+        val safe = TextView(this).apply { text = "🔒 تحليل فقط — لا يتم تنفيذ أي صفقة"; textSize = 15f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 18) }
+        apiUrl = EditText(this).apply { hint = "رابط الخادم (مثال: https://...)"; setText(""); singleLine = true }
+        apiKey = EditText(this).apply { hint = "OpenRouter API Key"; inputType = 0x81; singleLine = true }
+        val pick = Button(this).apply { text = "📷 اختيار صورة الشارت" }
+        val analyze = Button(this).apply { text = "🔎 تحليل الشارت"; isEnabled = false }
+        result = TextView(this).apply { text = "اختر صورة واضحة ثم اضغط تحليل."; textSize = 16f; setPadding(0, 22, 0, 0); textIsSelectable = true }
 
-        listen.setOnClickListener { startVoice() }
-        access.setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 10)
-    }
+        root.addView(title); root.addView(safe); root.addView(apiUrl, LinearLayout.LayoutParams(-1, -2)); root.addView(apiKey, LinearLayout.LayoutParams(-1, -2)); root.addView(pick); root.addView(analyze); root.addView(result)
+        setContentView(root)
 
-    private fun startVoice() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) { status.text = "التعرف الصوتي غير متاح على هذا الجهاز"; return }
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { r ->
-            r.setRecognitionListener(SimpleRecognitionListener { text -> handleCommand(text) })
-            val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "تحدث بالأمر")
-            }
-            r.startListening(i); status.text = "أستمع..."
+        pick.setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE) }, 100)
+        }
+        analyze.setOnClickListener { analyzeImage() }
+        pick.setOnClickListener {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }, 100)
         }
     }
 
-    private fun handleCommand(text: String) {
-        status.text = "الأمر: $text"
-        when {
-            text.contains("الإعدادات") -> startActivity(Intent(Settings.ACTION_SETTINGS))
-            text.contains("الرئيسية") -> PhoneAccessibilityService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-            text.contains("رجوع") -> PhoneAccessibilityService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-            text.contains("الإشعارات") -> PhoneAccessibilityService.instance?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-            else -> status.append("\nالأمر مفهوم، لكن هذا الإصدار لا ينفذه بعد.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 100 && resultCode == RESULT_OK) {
+            imageUri = data?.data
+            result.text = if (imageUri != null) "✅ تم اختيار الصورة. أدخل رابط الخادم ثم اضغط تحليل." else "لم يتم اختيار صورة."
+            (findButton("🔎 تحليل الشارت"))?.isEnabled = imageUri != null
         }
     }
 
-    override fun onDestroy() { recognizer?.destroy(); super.onDestroy() }
-}
+    private fun findButton(text: String): Button? {
+        val content = window.decorView.findViewById<android.view.ViewGroup>(android.R.id.content)
+        fun walk(v: android.view.View): Button? {
+            if (v is Button && v.text.toString() == text) return v
+            if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))?.let { return it }
+            return null
+        }
+        return walk(content)
+    }
 
-private class SimpleRecognitionListener(val onText: (String) -> Unit) : android.speech.RecognitionListener {
-    override fun onResults(results: Bundle?) { val s = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull(); if (s != null) onText(s) }
-    override fun onError(error: Int) {}
-    override fun onReadyForSpeech(p: Bundle?) {}
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(r: Float) {}
-    override fun onBufferReceived(b: ByteArray?) {}
-    override fun onEndOfSpeech() {}
-    override fun onPartialResults(b: Bundle?) {}
-    override fun onEvent(t: Int, p: Bundle?) {}
+    private fun analyzeImage() {
+        val uri = imageUri ?: return
+        val base = apiUrl.text.toString().trim().trimEnd('/')
+        val key = apiKey.text.toString().trim()
+        if (base.isBlank()) { result.text = "❌ أدخل رابط خادم Pocket OTC AI Analyzer."; return }
+        result.text = "⏳ جارٍ رفع الصورة وتحليلها..."
+        Thread {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw IOException("تعذر قراءة الصورة")
+                val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("file", "chart.jpg", bytes.toRequestBody("image/jpeg".toMediaType()))
+                    .build()
+                val reqBuilder = Request.Builder().url("$base/api/analyze-image").post(body)
+                if (key.isNotBlank()) reqBuilder.addHeader("X-OpenRouter-Key", key)
+                client.newCall(reqBuilder.build()).execute().use { response ->
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) throw IOException("HTTP ${response.code}: $text")
+                    runOnUiThread { result.text = formatJson(text) }
+                }
+            } catch (e: Exception) { runOnUiThread { result.text = "❌ ${e.message}" } }
+        }.start()
+    }
+
+    private fun formatJson(raw: String): String {
+        return try {
+            val o = org.json.JSONObject(raw)
+            "الإشارة: ${o.optString("signal", "NO TRADE")}\nالثقة: ${o.optInt("confidence", 0)}%\nالاتجاه: ${o.optString("direction", "NEUTRAL")}\nالأفق: ${o.optInt("duration_minutes", 1)} دقيقة\n\nالسبب:\n${o.optString("reason", "غير متوفر")}\n\nالمخاطر:\n${o.optString("risks", "غير متوفر")}\n\nالمصدر: ${o.optString("source", "VISION")}\n${o.optString("disclaimer", "تحليل فقط — لا يتم تنفيذ أي صفقة.")}"
+        } catch (_: Exception) { raw }
+    }
 }
